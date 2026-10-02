@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 st.set_page_config(page_title="Hledač štěněte do bytu 🐾", page_icon="🐾", layout="wide")
 
 st.title("🐾 Multi-útulkový hledač štěněte (Praha -> Celá ČR)")
-st.markdown("Rychlé paralelní prohledávání **Peswebu** a **dočaskových spolků** s kontrolou vhodnosti do bytu.")
+st.markdown("Rychlé paralelní prohledávání **ověřených českých katalogů, útulků a dočaskových spolků** s kontrolou vhodnosti do bytu.")
 
 # --- POSTRANNÍ PANEL S FILTRY PRO KAMARÁDKU ---
 st.sidebar.header("⚙️ 1. Nastavení parametrů")
@@ -25,8 +25,9 @@ hide_big_breeds = st.sidebar.checkbox("Vyřadit křížence velkých plemen (ov�
 custom_word = st.sidebar.text_input("Hledané slovo v textu (např. kočky, děti):", "")
 
 st.sidebar.divider()
-st.sidebar.header("🌐 2. Zdroje a kontrola")
+st.sidebar.header("🌐 2. Které zdroje prohledat?")
 pages_pesweb = st.sidebar.slider("Kolik stránek Peswebu prohledat", 1, 8, 4)
+src_pbh = st.sidebar.checkbox("Psi bez hranic & Zachránění (Mnoho štěňat!)", value=True)
 src_dede = st.sidebar.checkbox("Dočasky De De (Praha - 100% do bytu)", value=True)
 src_anidef = st.sidebar.checkbox("Útulek AniDef (Žim - Severní Čechy)", value=True)
 src_voriskov = st.sidebar.checkbox("Voříškov & Dogpoint (Okolí Prahy)", value=True)
@@ -42,7 +43,8 @@ def clean_dog_text(raw_text):
         "O plemeni Každý mazlíček",
         "Copyright ©",
         "Související příspěvky",
-        "Mohlo by vás zajímat"
+        "Mohlo by vás zajímat",
+        "Sledujte nás na"
     ]
     for phrase in stop_phrases:
         if phrase in text:
@@ -53,12 +55,13 @@ def clean_dog_text(raw_text):
 def analyze_dog(title, raw_text, source_name):
     t_low = title.lower().strip()
 
-    # 0. Tvrdá pojistka proti informačním stránkám
+    # 0. Tvrdá pojistka proti informačním stránkám a menu
     bad_titles = [
         "postup adopce", "podmínky adopce", "jak adoptovat", "adoptujte",
         "kontakt", "o nás", "dotazník", "jak pomoci", "psi k adopci",
         "nabídka psů", "našel domov", "v adopci", "co je dočasná péče",
-        "dočasky de de", "externí inzerce", "virtuální adopce"
+        "dočasky de de", "externí inzerce", "virtuální adopce", "slovník",
+        "odchyt psů", "naši psi", "informace k adopci", "zachránění a opuštění"
     ]
     if any(b == t_low or b in t_low for b in bad_titles) or len(t_low) < 2:
         return False, -99, [], "Obecná informační stránka"
@@ -66,7 +69,7 @@ def analyze_dog(title, raw_text, source_name):
     cleaned = clean_dog_text(raw_text)
     full = (title + " " + cleaned).lower()
 
-    if any(x in full for x in ["tato inzerce již není aktuální", "stav: v adopci", "domov již nehledá"]):
+    if any(x in full for x in ["tato inzerce již není aktuální", "stav: v adopci", "domov již nehledá", "našel nový domov"]):
         return False, -99, [], "Pejsek už našel domov (v adopci)"
 
     badges = [f"🏠 {source_name}"]
@@ -81,7 +84,7 @@ def analyze_dog(title, raw_text, source_name):
     ]
     flat_green_flags = [
         "do bytu", "v bytě", "dočasné péči", "hygienické návyky",
-        "na podložku", "čistotn", "bydlení uvnitř"
+        "na podložku", "čistotn", "bydlení uvnitř", "vhodný domů"
     ]
 
     if any(p in full for p in garden_red_flags):
@@ -95,14 +98,19 @@ def analyze_dog(title, raw_text, source_name):
     else:
         badges.append("⚠️ Byt v textu nezmíněn")
 
-    # 2. Věk (týdny, měsíce, roky + výpočet z data narození např. "Narozen: 5/2026")
+    # 2. Věk (týdny, měsíce, roky + výpočet z data narození)
     age_months = None
-    m_match = re.search(r'\b(\d{1,2})\s*(měsíc|měsíční|měs\.)', full)
+    # Kontrola "1 rok a X měsíců", aby se nepletlo se samotnými měsíci
+    yr_and_m = re.search(r'(\d{1,2})\s*(?:rok|roky)\s*(?:a\s*)?(\d{1,2})\s*měs', full)
+    m_match = re.search(r'\b(\d{1,2})\s*(měsíc|měsíční|měs\.|měs\b)', full)
     w_match = re.search(r'\b(\d{1,2})\s*(týdn|týden)', full)
     y_match = re.search(r'\b(\d{1,2})\s*(rok|roky|let|roční|letý|letá)\b', full)
     born_match = re.search(r'narozen[a-z]*:\s*(?:(\d{1,2})[./])?(20\d{2})', full)
 
-    if w_match:
+    if yr_and_m:
+        age_months = int(yr_and_m.group(1)) * 12 + int(yr_and_m.group(2))
+        badges.append(f"📅 Věk: {age_months} měs.")
+    elif w_match:
         age_months = max(1, int(w_match.group(1)) // 4)
         badges.append(f"🍼 Věk: ~{w_match.group(1)} týdnů")
         score += 3
@@ -117,8 +125,8 @@ def analyze_dog(title, raw_text, source_name):
         calc_m = max(1, (now.year - b_year) * 12 + (now.month - b_month))
         age_months = calc_m
         badges.append(f"📅 Věk (dle nar.): ~{calc_m} měs.")
-    elif any(k in full for k in ["věk měsíce", "měsíce", "měsíců", "štěně", "štěňátko", "štěňata", "miminko"]):
-        if y_match and int(y_match.group(1)) >= 2:
+    elif any(k in full for k in ["věk měsíce", "měsíce", "měsíců", "štěně", "štěňátko", "štěňata", "miminko", "prcek"]):
+        if y_match and int(y_match.group(1)) >= 1:
             age_months = int(y_match.group(1)) * 12
             badges.append(f"📅 Věk: {y_match.group(1)} r.")
         else:
@@ -128,14 +136,13 @@ def analyze_dog(title, raw_text, source_name):
     elif y_match:
         age_months = int(y_match.group(1)) * 12
         badges.append(f"📅 Věk: {y_match.group(1)} r.")
-    elif any(k in full for k in ["věk roky", "roky", "dospělý", "senior", "psí seniorka", "starší"]):
+    elif any(k in full for k in ["věk roky", "roky", "rok", "let", "dospělý", "senior", "psí seniorka", "starší", "stařík"]):
         age_months = 36
         badges.append("📅 Věk: Dospělý / Senior")
 
     if age_months is not None and age_months > max_age:
         reasons_rejected.append(f"Věk ({age_months} měs. > max {max_age} měs.)")
     elif age_months is None:
-        # U přímých webů útulků, kde chybí slovo štěně i věk, jde téměř vždy o dospělého psa
         if source_name != "Pesweb.cz":
             reasons_rejected.append("Chybí zmínka o štěněti (dospělý pes)")
         else:
@@ -143,8 +150,8 @@ def analyze_dog(title, raw_text, source_name):
 
     # 3. Váha a velikost v dospělosti
     big_breeds = [
-        "německého ovčáka", "německý ovčák", "belgický ovčák", "australský ovčák", "husky",
-        "malamut", "ohař", "labrador", "retrívr", "ridgeback", "rotvajler", "dobrman",
+        "německého ovčáka", "německý ovčák", "belgický ovčák", "australský ovčák", "mladý ovčák",
+        "husky", "malamut", "ohař", "labrador", "retrívr", "ridgeback", "rotvajler", "dobrman",
         "středoasiat", "čuvač", "doga", "většího vzrůstu", "velkého vzrůstu", "velikost velký"
     ]
     if any(b in full for b in big_breeds):
@@ -163,8 +170,8 @@ def analyze_dog(title, raw_text, source_name):
             if hide_big_breeds:
                 reasons_rejected.append(f"Váha {est_adult} kg")
         else:
-            badges.append(f"⚖️ Zmíněná váha: {est_adult} kg")
-    elif any(k in full for k in ["menší střední", "středního vzrůstu", "velikost střední", "velikost malý"]):
+            badges.append(f"⚖️️ Zmíněná váha: {est_adult} kg")
+    elif any(k in full for k in ["menší střední", "středního vzrůstu", "střední velikosti", "velikost střední", "velikost malý", "střední ·", "malý ·", "drobná"]):
         badges.append("✅ Malý / Střední vzrůst")
         score += 1
 
@@ -179,12 +186,12 @@ def analyze_dog(title, raw_text, source_name):
 
     # 5. Pohlaví
     if gender_filter == "Jen fenky ♀️":
-        if not any(w in full for w in ["fenka", "fenečka", "holčička", "pohlaví fena", "pohlaví: samice", "fena"]):
-            if any(w in full for w in ["pejsek", "kluk", "chlapeček", "pohlaví pes", "pohlaví: samec", "pes"]):
+        if not any(w in full for w in ["fenka", "fenečka", "holčička", "pohlaví fena", "pohlaví: samice", "fena", "slečna", "princezna", "sestřička"]):
+            if any(w in full for w in ["pejsek", "kluk", "chlapeček", "pohlaví pes", "pohlaví: samec", "pes", "klučík", "bratříček"]):
                 reasons_rejected.append("Pohlaví (pes)")
     elif gender_filter == "Jen psi ♂️":
-        if not any(w in full for w in ["pejsek", "kluk", "chlapeček", "pohlaví pes", "pohlaví: samec", "pes"]):
-            if any(w in full for w in ["fenka", "fenečka", "holčička", "pohlaví fena", "pohlaví: samice", "fena"]):
+        if not any(w in full for w in ["pejsek", "kluk", "chlapeček", "pohlaví pes", "pohlaví: samec", "pes", "klučík"]):
+            if any(w in full for w in ["fenka", "fenečka", "holčička", "pohlaví fena", "pohlaví: samice", "fena", "slečna", "princezna", "sestřička"]):
                 reasons_rejected.append("Pohlaví (fena)")
 
     # 6. Vlastní klíčové slovo
@@ -205,22 +212,28 @@ def scrape_single_dog(task):
     bad_url_parts = [
         "postup-adopce", "podminky-adopce", "kontakt", "o-nas", "jak-pomoci",
         "darujte", "smlouva", "dotaznik", "co-je-docasna-pece", "nabidka-kocky",
-        "virtualni-adopce", "nasli-domov", "v-leceni"
+        "virtualni-adopce", "nasli-domov", "v-leceni", "slovnik-psich-plemen",
+        "organizace", "odchyt-psu", "nasi-psi", "adopce"
     ]
-    if any(b in link.lower() for b in bad_url_parts):
+    # Povolíme /psi-k-adopci/jmeno, ale zakážeme samotné /adopce
+    path_end = link.rstrip("/").split("/")[-1].lower()
+    if path_end in bad_url_parts or any(b in link.lower() for b in ["postup-adopce", "podminky-adopce", "dotaznik", "virtualni-adopce"]):
         return None
+
     try:
         r = requests.get(link, headers=headers, timeout=7)
         soup = BeautifulSoup(r.text, "html.parser")
         title_el = soup.find("h1") or soup.find("h2")
         title = title_el.get_text(strip=True) if title_el else "Pejsek k adopci"
+        # Očištění titulku u Psi bez hranic a Dogpointu
+        title = title.replace("— Pes k adopci", "").replace("🐾 Soukromý útulek pro opuštěné a týrané psy", "").strip()
 
         text_content = soup.get_text(" ", strip=True)
         img_url = None
         for img in soup.find_all("img", src=True):
             src = img["src"]
             low = src.lower()
-            if any(k in low for k in ["upload", "files", "wp-content", "images/zvirata", "pes", "dog", "storage"]):
+            if any(k in low for k in ["upload", "files", "wp-content", "images", "pes", "dog", "storage", "media", "supabase", "cloudinary"]):
                 if not any(bad in low for bad in ["logo", "icon", "banner", "avatar", "svg", "button", "cropped-"]):
                     img_url = urljoin(base_domain, src)
                     break
@@ -235,7 +248,7 @@ def scrape_single_dog(task):
     except Exception:
         return None
 
-# --- SPECIÁLNÍ ČTEČKA KARET PRO DOČASKY DE DE A DOGPOINT ---
+# --- SPECIÁLNÍ ČTEČKA KARET PRO DOČASKY DE DE ---
 def scrape_dede_cards(headers):
     dede_url = "https://www.docaskydede.cz/k-adopci/nabidka-psu/"
     dede_dogs = []
@@ -274,9 +287,70 @@ def scrape_dede_cards(headers):
     unique = {d["title"]: d for d in dede_dogs}
     return list(unique.values())
 
+# --- SPECIÁLNÍ ČTEČKA PRO ZACHRÁNĚNÍ A OPUŠTĚNÍ & PSI BEZ HRANIC ---
+def scrape_pbh_and_zachraneni(headers):
+    results = []
+    # 1. Karty na hlavní stránce psibezhranic.com (např. Neria 5 měs., Jamie 7 měs.)
+    pbh_home = "https://psibezhranic.com/"
+    try:
+        r = requests.get(pbh_home, headers=headers, timeout=8)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "/psi-k-adopci/" in href and not href.endswith("/psi-k-adopci") and "#" not in href:
+                full_u = urldefrag(urljoin(pbh_home, href))[0]
+                card_text = a.get_text(" ", strip=True)
+                img_el = a.find("img", src=True)
+                img_url = urljoin(pbh_home, img_el["src"]) if img_el else None
+                if len(card_text) > 5:
+                    # Vytáhneme jméno pejska z karty nebo z URL
+                    slug_name = full_u.rstrip("/").split("/")[-1].capitalize()
+                    results.append({
+                        "title": f"{slug_name} (Psi bez hranic)",
+                        "url": full_u,
+                        "text": card_text + " Do bytu, rodinné prostředí (Psi bez hranic).",
+                        "img": img_url,
+                        "source": "Psi bez hranic",
+                        "needs_detail": True
+                    })
+    except Exception:
+        pass
+
+    # 2. Výpis psů na zachraneniaopusteni.cz (Elara 5 měs., Holly 5 měs., Silvi 4 měs., Tarti 4 měs.)
+    z_url = "https://zachraneniaopusteni.cz/"
+    try:
+        r = requests.get(z_url, headers=headers, timeout=8)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for block in soup.find_all(["article", "div", "li"]):
+            txt = block.get_text(" ", strip=True)
+            if len(txt) < 80 or len(txt) > 1200:
+                continue
+            if any(k in txt for k in ["Hodí se k dětem", "Do bytu", "hledá domov", "čeká na svůj nový domov"]):
+                h_el = block.find(["h2", "h3", "h4", "strong"])
+                name = h_el.get_text(strip=True) if h_el else txt[:25]
+                if len(name) < 2 or "organizace" in name.lower() or "upozornění" in name.lower():
+                    continue
+                a_el = block.find("a", href=True)
+                link = urljoin(z_url, a_el["href"]) if (a_el and "#" not in a_el["href"]) else z_url
+                img_el = block.find("img", src=True)
+                img_url = urljoin(z_url, img_el["src"]) if img_el else None
+                results.append({
+                    "title": name[:45],
+                    "url": link,
+                    "text": txt,
+                    "img": img_url,
+                    "source": "Zachránění a opuštění",
+                    "needs_detail": False
+                })
+    except Exception:
+        pass
+
+    unique = {d["title"]: d for d in results}
+    return list(unique.values())
+
 # --- PARALELNÍ SBĚRAČ ZE VŠECH ZDROJŮ ---
 @st.cache_data(ttl=900)
-def fetch_all_dogs_fast(pages_pw, use_dede, use_anidef, use_voriskov):
+def fetch_all_dogs_fast(pages_pw, use_pbh, use_dede, use_anidef, use_voriskov):
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
     tasks = []
     seen_urls = set()
@@ -300,11 +374,21 @@ def fetch_all_dogs_fast(pages_pw, use_dede, use_anidef, use_voriskov):
         except Exception:
             continue
 
-    # 2. DOČASKY DE DE
+    # 2. PSI BEZ HRANIC & ZACHRÁNĚNÍ A OPUŠTĚNÍ
+    if use_pbh:
+        pbh_items = scrape_pbh_and_zachraneni(headers)
+        for item in pbh_items:
+            if item.get("needs_detail") and item["url"] not in seen_urls:
+                seen_urls.add(item["url"])
+                tasks.append((item["url"], "https://psibezhranic.com", "Psi bez hranic", headers))
+            else:
+                direct_dogs.append(item)
+
+    # 3. DOČASKY DE DE
     if use_dede:
         direct_dogs.extend(scrape_dede_cards(headers))
 
-    # 3. ÚTULEK ANIDEF (Žim)
+    # 4. ÚTULEK ANIDEF (Žim)
     if use_anidef:
         try:
             r = requests.get("https://www.anidef.cz/nase-zvirata/k-adopci/psi-k-adopci", headers=headers, timeout=8)
@@ -323,7 +407,7 @@ def fetch_all_dogs_fast(pages_pw, use_dede, use_anidef, use_voriskov):
         except Exception:
             pass
 
-    # 4. VOŘÍŠKOV (profily mají v adrese /pejsci/) & DOGPOINT
+    # 5. VOŘÍŠKOV (/pejsci/) & DOGPOINT (/obsah/)
     if use_voriskov:
         for v_url in ["https://voriskov.cz/psi-k-adopci/", "https://voriskov.cz/psi-k-adopci-externi/"]:
             try:
@@ -341,7 +425,7 @@ def fetch_all_dogs_fast(pages_pw, use_dede, use_anidef, use_voriskov):
             except Exception:
                 continue
 
-        # Dogpoint
+        # Dogpoint – profily psů mají na webu cestu /obsah/jmeno-psa
         dp_url = "https://www.dog-point.cz/psi-k-adopci"
         try:
             r = requests.get(dp_url, headers=headers, timeout=8)
@@ -351,17 +435,16 @@ def fetch_all_dogs_fast(pages_pw, use_dede, use_anidef, use_voriskov):
                 if "#" in a["href"]:
                     continue
                 href = urldefrag(urljoin(dp_url, a["href"]))[0]
-                if "dog-point.cz/" in href and any(x in href for x in ["/psi-k-adopci/", "/nasi-psi/", "/pes/"]):
-                    if href.rstrip("/") != dp_url.rstrip("/") and href not in seen_urls and count_dp < 15:
-                        seen_urls.add(href)
-                        tasks.append((href, dp_url, "Dogpoint", headers))
-                        count_dp += 1
+                if "dog-point.cz/obsah/" in href and href not in seen_urls and count_dp < 15:
+                    seen_urls.add(href)
+                    tasks.append((href, "https://www.dog-point.cz", "Dogpoint", headers))
+                    count_dp += 1
         except Exception:
             pass
 
-    # Paralelní čtení všech nasbíraných odkazů najednou (8 vláken)
+    # Paralelní čtení všech nasbíraných odkazů najednou (10 vláken)
     dogs = list(direct_dogs)
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(scrape_single_dog, t) for t in tasks]
         for f in as_completed(futures):
             res = f.result()
@@ -378,12 +461,12 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 with tab1:
-    st.subheader("Živé prohledávání útulků a dočasek")
-    st.write("Klikni na tlačítko níže. Appka paralelně projde inzeráty, odstřihne z nich reklamy v patičce a vyfiltruje štěňata podle posuvníků vlevo.")
+    st.subheader("Živé prohledávání ověřených útulků a dočasek")
+    st.write("Klikni na tlačítko níže. Appka paralelně projde Pesweb, Psi bez hranic, Zachránění a opuštění, Dočasky De De, AniDef, Voříškov i Dogpoint.")
     
-    if st.button("🔄 Načíst a vyfiltrovat aktuální inzeráty (Zrychlený sken)", type="primary"):
-        with st.spinner("Rychle čtu profily psů napříč útulky (cca 5–10 vteřin)..."):
-            raw_dogs = fetch_all_dogs_fast(pages_pesweb, src_dede, src_anidef, src_voriskov)
+    if st.button("🔄 Načíst a vyfiltrovat aktuální inzeráty ze všech zdrojů", type="primary"):
+        with st.spinner("Rychle čtu profily psů napříč útulky (cca 6–12 vteřin)..."):
+            raw_dogs = fetch_all_dogs_fast(pages_pesweb, src_pbh, src_dede, src_anidef, src_voriskov)
             st.session_state["raw_dogs"] = raw_dogs
 
     if "raw_dogs" in st.session_state:
@@ -398,7 +481,7 @@ with tab1:
                 rejected.append((reason, badges, d))
         
         filtered.sort(key=lambda x: x[0], reverse=True)
-        st.success(f"Bleskově přečteno **{len(raw_dogs)}** psích profilů. Tvým filtrům vlevo vyhovuje: **{len(filtered)}**")
+        st.success(f"Bleskově přečteno **{len(raw_dogs)}** psích profilů napříč útulky. Tvým filtrům vlevo vyhovuje: **{len(filtered)}**")
 
         if not filtered:
             st.warning("Žádný z právě načtených psů neprošel všemi filtry. Mrkni hned níže do sekce '🕵️ Vyřazení psi', proč přesně vypadli, nebo vlevo posuň počet stránek Peswebu na 6–8!")
@@ -418,16 +501,16 @@ with tab1:
                     if "Popis" in snippet:
                         snippet = snippet.split("Popis", 1)[-1]
                     st.write(snippet[:420] + "...")
-                    st.link_button("👉 Otevřít celý inzerát / FB album", d["url"])
+                    st.link_button("👉 Otevřít celý inzerát a kontakt", d["url"])
 
         if show_rejected and rejected:
             st.divider()
             with st.expander(f"🕵️ Zobrazit vyřazené psy ({len(rejected)}) a důvod jejich vyřazení"):
-                for reason, badges, d in rejected[:60]:
+                for reason, badges, d in rejected[:80]:
                     st.markdown(f"* ❌ **{d['title']}** ({d.get('source')}) – [odkaz]({d['url']}) ➡️ *Vyřazeno kvůli: {reason}*")
 
 with tab2:
-    st.subheader("Rentgen inzerátu z Facebooku nebo Dočasek De De")
+    st.subheader("Rentgen inzerátu z Facebooku nebo jiného webu")
     st.write("Našla jsi štěně na Facebooku? Zkopíruj sem popis a hned uvidíš, zda v něm není skrytá podmínka zahrady nebo velkého vzrůstu.")
     user_text = st.text_area("Vlož zkopírovaný text inzerátu:", height=140)
     if st.button("Analyzovat vložený text"):
@@ -443,21 +526,21 @@ with tab2:
 
 with tab3:
     st.subheader("Přímé prokliky na 'Byt-friendly' dočaskové spolky")
-    st.write("U Dočasek De De a Tlapek na cestě platí, že u všech psů je **podmínkou bydlení uvnitř v bytě/domě** (nikdy ne v kotci nebo jen na zahradě):")
+    st.write("Tyto spolky fungují přes dočasné péče v bytech a nemají předsudky vůči adopci do Prahy:")
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("""
+        * **[Psi bez hranic – Katalog](https://psibezhranic.com/)** (+ [Zachránění a opuštění](https://zachraneniaopusteni.cz/))
         * **[Dočasky De De – Katalog psů](https://www.docaskydede.cz/k-adopci/nabidka-psu/)** (+ [Facebook](https://www.facebook.com/DocaskyDeDe))
-        * **[Tlapky na cestě – Facebook](https://www.facebook.com/tlapkynaceste)** (+ [Web](https://www.tlapkynaceste.cz/adopce/))
-        * **[Srdcem pro psy (Vrbičany u Slaného)](https://www.facebook.com/srdcempropsy)**
+        * **[Tlapky na cestě – Facebook](https://www.facebook.com/tlapkynaceste)** (+ [Info k adopci](https://www.tlapkynaceste.cz/adopce/))
         * **[Voříškov (u Prahy)](https://voriskov.cz/psi-k-adopci/)**
         """)
     with c2:
         st.markdown("""
+        * **[Srdcem pro psy (Vrbičany u Slaného)](https://www.facebook.com/srdcempropsy)**
         * **[Útulek AniDef (Žim - 55 min po D8)](https://www.anidef.cz/nase-zvirata/k-adopci/psi-k-adopci)**
-        * **[Dejte nám šanci (Morava)](https://www.dejtenamsanci.cz/psi-k-adopci/)**
         * **[Štěňata v nouzi (Celá ČR)](https://www.facebook.com/stenatavnouzi)**
-        * **[Pesweb – Katalog](https://www.pesweb.cz/cz/psi-k-adopci)**
+        * **[Dogpoint (Okolí Prahy)](https://www.dog-point.cz/psi-k-adopci)**
         """)
     
     st.divider()
